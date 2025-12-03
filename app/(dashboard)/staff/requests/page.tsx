@@ -1,158 +1,112 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { ShiftRequest } from '@/types'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { ShiftRequestCalendar } from '@/components/staff/shift-request-calendar'
+import { useAuth } from '@/hooks/use-auth'
+import { toast } from 'sonner'
+import type { ShiftRequest, Staff } from '@/types'
+import type { EventInput, DateClickArg } from '@fullcalendar/core'
+import RequestCalendar from '@/components/staff/RequestCalendar'
+import { RequestModal } from '@/components/staff/RequestModal'
 
 export default function StaffRequestsPage() {
-  const [currentMonth, setCurrentMonth] = useState(new Date())
+  const { user } = useAuth()
+  const [staffRecord, setStaffRecord] = useState<Staff | null>(null)
   const [requests, setRequests] = useState<ShiftRequest[]>([])
   const [loading, setLoading] = useState(true)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [existingRequest, setExistingRequest] = useState<ShiftRequest | null>(null)
-  const [formData, setFormData] = useState({
-    requestType: 'available' as 'available' | 'unavailable' | 'preferred_time',
-    startTime: '',
-    endTime: '',
-    notes: '',
-  })
-  const [submitting, setSubmitting] = useState(false)
 
-  const fetchRequests = async () => {
-    const staffId = sessionStorage.getItem('qr_staff_id')
-    if (!staffId) return
-
+  const fetchInitialData = useCallback(async () => {
+    if (!user) return
+    setLoading(true)
     const supabase = createClient()
-    const { data, error } = await supabase
+
+    // Get staff record
+    const { data: staffData, error: staffError } = await supabase
+      .from('staff')
+      .select('*')
+      .eq('user_id', user.id)
+      .single()
+
+    if (staffError || !staffData) {
+      toast.error('スタッフ情報の取得に失敗しました')
+      setLoading(false)
+      return
+    }
+    setStaffRecord(staffData)
+
+    // Fetch existing requests
+    const { data: requestsData, error: requestsError } = await supabase
       .from('shift_requests')
       .select('*')
-      .eq('staff_id', staffId)
-      .order('request_date', { ascending: true })
+      .eq('staff_id', staffData.id)
 
-    if (!error && data) {
-      setRequests(data)
+    if (requestsError) {
+      toast.error('希望シフトの読み込みに失敗しました')
+    } else {
+      setRequests(requestsData || [])
     }
     setLoading(false)
-  }
+  }, [user])
 
   useEffect(() => {
-    fetchRequests()
-  }, [])
+    fetchInitialData()
+  }, [fetchInitialData])
 
-  const handleDateClick = (date: Date) => {
-    setSelectedDate(date)
-    const existing = requests.find(
-      (req) => new Date(req.request_date).toDateString() === date.toDateString()
-    )
-    if (existing) {
-      setExistingRequest(existing)
-      setFormData({
-        requestType: existing.request_type as any,
-        startTime: existing.preferred_start_time || '',
-        endTime: existing.preferred_end_time || '',
-        notes: existing.notes || '',
-      })
-    } else {
-      setExistingRequest(null)
-      setFormData({
-        requestType: 'available',
-        startTime: '',
-        endTime: '',
-        notes: '',
-      })
-    }
-    setDialogOpen(true)
+  const calendarEvents = useMemo((): EventInput[] => {
+    return requests.map(req => {
+      let title = ''
+      let className = ''
+      switch (req.request_type) {
+        case 'available': title = '出勤可能'; className = 'available'; break;
+        case 'unavailable': title = '出勤不可'; className = 'unavailable'; break;
+        case 'preferred_time': title = `希望: ${req.preferred_start_time?.slice(0,5)}-${req.preferred_end_time?.slice(0,5)}`; className = 'preferred_time'; break;
+      }
+      return {
+        id: req.id,
+        title,
+        start: req.request_date,
+        allDay: true,
+        className,
+        extendedProps: req,
+      }
+    })
+  }, [requests])
+
+  const handleDateClick = (arg: DateClickArg) => {
+    const existing = requests.find(r => r.request_date === arg.dateStr)
+    setSelectedDate(arg.dateStr)
+    setExistingRequest(existing || null)
+    setIsModalOpen(true)
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedDate) return
-
-    const staffId = sessionStorage.getItem('qr_staff_id')
-    const staffName = sessionStorage.getItem('qr_staff_name')
-    if (!staffId) return
-
-    setSubmitting(true)
-
-    try {
-      const supabase = createClient()
-
-      // スタッフ情報から組織IDを取得
-      const { data: staffData } = await supabase
-        .from('staff')
-        .select('organization_id')
-        .eq('id', staffId)
-        .single()
-
-      if (!staffData) throw new Error('スタッフ情報が見つかりません')
-
-      const requestData = {
-        organization_id: staffData.organization_id,
-        staff_id: staffId,
-        request_date: selectedDate.toISOString().split('T')[0],
-        request_type: formData.requestType,
-        preferred_start_time: formData.startTime || null,
-        preferred_end_time: formData.endTime || null,
-        notes: formData.notes || null,
-        status: 'pending',
-      }
-
-      if (existingRequest) {
-        // 更新
-        const { error } = await supabase
-          .from('shift_requests')
-          .update(requestData)
-          .eq('id', existingRequest.id)
-
-        if (error) throw error
-      } else {
-        // 新規作成
-        const { error } = await supabase.from('shift_requests').insert([requestData])
-
-        if (error) throw error
-      }
-
-      setDialogOpen(false)
-      fetchRequests()
-    } catch (error) {
-      alert('シフト希望の提出に失敗しました: ' + (error instanceof Error ? error.message : ''))
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleDelete = async () => {
-    if (!existingRequest) return
-    if (!confirm('このシフト希望を削除しますか？')) return
-
+  const handleSubmitRequest = async (data: Partial<ShiftRequest>) => {
+    if (!staffRecord) return
     const supabase = createClient()
-    const { error } = await supabase.from('shift_requests').delete().eq('id', existingRequest.id)
+
+    const requestData = {
+      ...data,
+      staff_id: staffRecord.id,
+      organization_id: staffRecord.organization_id,
+    }
+
+    const { error } = await supabase.from('shift_requests').upsert(requestData)
 
     if (error) {
-      alert('削除に失敗しました: ' + error.message)
+      toast.error('希望の送信に失敗しました', { description: error.message })
     } else {
-      setDialogOpen(false)
-      fetchRequests()
+      toast.success('希望を送信しました')
+      setIsModalOpen(false)
+      fetchInitialData() // Refresh data
     }
   }
 
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <p className="text-muted-foreground">読み込み中...</p>
+      <div className="flex h-full items-center justify-center">
+        <p className="text-muted-foreground">希望シフトを読み込み中...</p>
       </div>
     )
   }
@@ -160,110 +114,19 @@ export default function StaffRequestsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">シフト希望提出</h1>
-        <p className="text-muted-foreground">カレンダーから日付を選択してシフト希望を提出できます</p>
+        <h1 className="text-3xl font-bold">シフト希望</h1>
+        <p className="text-muted-foreground">カレンダーの日付をクリックして、希望を提出・編集してください。</p>
       </div>
 
-      <ShiftRequestCalendar
-        currentMonth={currentMonth}
-        onMonthChange={setCurrentMonth}
-        requests={requests}
-        onDateClick={handleDateClick}
+      <RequestCalendar events={calendarEvents} onDateClick={handleDateClick} />
+
+      <RequestModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        date={selectedDate}
+        existingRequest={existingRequest}
+        onSubmit={handleSubmitRequest}
       />
-
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {selectedDate && selectedDate.toLocaleDateString('ja-JP', { month: 'long', day: 'numeric' })}のシフト希望
-            </DialogTitle>
-            <DialogDescription>
-              {existingRequest ? '希望を変更できます' : '希望を提出できます'}
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleSubmit}>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>希望タイプ *</Label>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant={formData.requestType === 'available' ? 'default' : 'outline'}
-                    className="flex-1"
-                    onClick={() => setFormData({ ...formData, requestType: 'available' })}
-                  >
-                    出勤可能
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={formData.requestType === 'unavailable' ? 'default' : 'outline'}
-                    className="flex-1"
-                    onClick={() => setFormData({ ...formData, requestType: 'unavailable' })}
-                  >
-                    出勤不可
-                  </Button>
-                </div>
-                <Button
-                  type="button"
-                  variant={formData.requestType === 'preferred_time' ? 'default' : 'outline'}
-                  className="w-full"
-                  onClick={() => setFormData({ ...formData, requestType: 'preferred_time' })}
-                >
-                  時間指定あり
-                </Button>
-              </div>
-
-              {formData.requestType === 'preferred_time' && (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label htmlFor="startTime">開始時間</Label>
-                      <Input
-                        id="startTime"
-                        type="time"
-                        value={formData.startTime}
-                        onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="endTime">終了時間</Label>
-                      <Input
-                        id="endTime"
-                        type="time"
-                        value={formData.endTime}
-                        onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="notes">備考（任意）</Label>
-                <Input
-                  id="notes"
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  placeholder="その他の要望など"
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              {existingRequest && (
-                <Button type="button" variant="destructive" onClick={handleDelete}>
-                  削除
-                </Button>
-              )}
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                キャンセル
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? '提出中...' : '提出する'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

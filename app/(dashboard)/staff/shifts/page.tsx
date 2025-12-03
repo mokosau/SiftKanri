@@ -1,59 +1,72 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Shift, ShiftAssignment } from '@/types'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-
-interface ShiftWithAssignment extends Shift {
-  assignment?: ShiftAssignment
-}
+import { useAuth } from '@/hooks/use-auth'
+import { toast } from 'sonner'
+import ShiftCalendar from '@/components/shared/StaffShiftCalendar' // Read-only calendar component
+import type { Shift, ShiftAssignment, Staff } from '@/types'
+import type { EventInput } from '@fullcalendar/core'
 
 export default function StaffShiftsPage() {
-  const [shifts, setShifts] = useState<ShiftWithAssignment[]>([])
+  const { user } = useAuth()
+  const [shifts, setShifts] = useState<Shift[]>([])
   const [loading, setLoading] = useState(true)
 
-  const fetchShifts = async () => {
-    const staffId = sessionStorage.getItem('qr_staff_id')
-    if (!staffId) return
-
+  const fetchAssignedShifts = useCallback(async () => {
+    if (!user) return
+    setLoading(true)
     const supabase = createClient()
 
-    // 自分がアサインされているシフトを取得
-    const { data: assignments } = await supabase
-      .from('shift_assignments')
-      .select('*, shifts(*)')
-      .eq('staff_id', staffId)
+    // 1. Get the staff record for the current user
+    const { data: staffData, error: staffError } = await supabase
+      .from('staff')
+      .select('id')
+      .eq('user_id', user.id)
+      .single()
 
-    if (assignments) {
-      const shiftsData = assignments
-        .map((a: any) => ({
-          ...a.shifts,
-          assignment: a,
-        }))
-        .filter((s: any) => s.status === 'published')
-        .sort((a: any, b: any) => new Date(b.shift_date).getTime() - new Date(a.shift_date).getTime())
+    if (staffError || !staffData) {
+      toast.error('スタッフ情報の取得に失敗しました。')
+      setLoading(false)
+      return
+    }
 
-      setShifts(shiftsData)
+    // 2. Get assigned shifts for this staff member
+    const { data, error } = await supabase
+      .from('shifts')
+      .select('*, shift_assignments!inner(*)')
+      .eq('status', 'published')
+      .eq('shift_assignments.staff_id', staffData.id)
+
+    if (error) {
+      toast.error('シフトの読み込みに失敗しました。', { description: error.message })
+    } else {
+      setShifts(data || [])
     }
     setLoading(false)
-  }
+  }, [user])
 
   useEffect(() => {
-    fetchShifts()
-  }, [])
+    fetchAssignedShifts()
+  }, [fetchAssignedShifts])
+
+  const calendarEvents = useMemo((): EventInput[] => {
+    return shifts.map((shift) => ({
+      id: shift.id,
+      title: `${shift.start_time?.slice(0, 5) || ''} - ${shift.end_time?.slice(0, 5) || ''}`,
+      start: `${shift.shift_date}T${shift.start_time || '00:00:00'}`,
+      end: `${shift.shift_date}T${shift.end_time || '23:59:59'}`,
+      allDay: !shift.start_time,
+      backgroundColor: '#3B82F6', // Blue for assigned shifts
+      borderColor: '#3B82F6',
+      extendedProps: shift,
+    }))
+  }, [shifts])
 
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <p className="text-muted-foreground">読み込み中...</p>
+      <div className="flex h-full items-center justify-center">
+        <p className="text-muted-foreground">あなたのシフトを読み込んでいます...</p>
       </div>
     )
   }
@@ -61,51 +74,16 @@ export default function StaffShiftsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">確定シフト</h1>
-        <p className="text-muted-foreground">あなたのシフトを確認できます</p>
+        <h1 className="text-3xl font-bold">あなたのシフト</h1>
+        <p className="text-muted-foreground">確定・公開済みのシフトがここに表示されます</p>
       </div>
 
-      {shifts.length === 0 ? (
-        <div className="flex h-64 items-center justify-center rounded-lg border border-dashed">
-          <div className="text-center">
-            <p className="text-sm text-muted-foreground">確定しているシフトがありません</p>
-            <p className="text-xs text-muted-foreground">
-              管理者がシフトを公開するとここに表示されます
-            </p>
-          </div>
-        </div>
+      {shifts.length > 0 ? (
+         <ShiftCalendar events={calendarEvents} />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>日付</TableHead>
-              <TableHead>時間</TableHead>
-              <TableHead>備考</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {shifts.map((shift) => (
-              <TableRow key={shift.id}>
-                <TableCell className="font-medium">
-                  {new Date(shift.shift_date).toLocaleDateString('ja-JP', {
-                    weekday: 'short',
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                  })}
-                </TableCell>
-                <TableCell>
-                  {shift.assignment?.start_time && shift.assignment?.end_time
-                    ? `${shift.assignment.start_time} - ${shift.assignment.end_time}`
-                    : shift.start_time && shift.end_time
-                    ? `${shift.start_time} - ${shift.end_time}`
-                    : '-'}
-                </TableCell>
-                <TableCell>{shift.notes || '-'}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <div className="flex h-64 items-center justify-center rounded-lg border border-dashed">
+          <p className="text-muted-foreground">まだシフトが割り当てられていません</p>
+        </div>
       )}
     </div>
   )

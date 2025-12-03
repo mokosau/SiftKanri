@@ -1,18 +1,21 @@
 'use client'
 
 import { useState } from 'react'
-import { QrCode, Trash2 } from 'lucide-react'
-import QRCode from 'qrcode'
+import { MoreHorizontal, QrCode, Edit, Trash2, UserPlus } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import type { Staff } from '@/types'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import {
   Table,
   TableBody,
@@ -21,6 +24,17 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import type { Staff } from '@/types'
+import { StaffEditModal } from './staff-edit-modal'
+import { StaffQrCodeModal } from './staff-qr-modal'
 
 interface StaffListProps {
   staff: Staff[]
@@ -29,161 +43,150 @@ interface StaffListProps {
 
 export function StaffList({ staff, onUpdate }: StaffListProps) {
   const [selectedStaff, setSelectedStaff] = useState<Staff | null>(null)
-  const [qrCodeUrl, setQrCodeUrl] = useState('')
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false)
 
-  const handleShowQRCode = async (staffMember: Staff) => {
-    setSelectedStaff(staffMember)
+  const handleToggleActive = async (staffMember: Staff) => {
+    const action = staffMember.is_active ? '無効化' : '有効化'
+    if (!confirm(`${staffMember.full_name} を${action}しますか？`)) return
 
-    // QRコードの内容: ログインURL + トークン
-    const loginUrl = `${window.location.origin}/qr-login?token=${staffMember.qr_token}`
-    const qrUrl = await QRCode.toDataURL(loginUrl, {
-      width: 300,
-      margin: 2,
-    })
-    setQrCodeUrl(qrUrl)
-  }
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('本当にこのスタッフを削除しますか？')) return
-
-    setDeleting(id)
     const supabase = createClient()
-    const { error } = await supabase.from('staff').delete().eq('id', id)
+    const { error } = await supabase
+      .from('staff')
+      .update({ is_active: !staffMember.is_active })
+      .eq('id', staffMember.id)
 
     if (error) {
-      alert('削除に失敗しました: ' + error.message)
+      toast.error(`スタッフの${action}に失敗しました`, { description: error.message })
     } else {
+      toast.success(`スタッフを${action}しました`)
       onUpdate()
     }
-    setDeleting(null)
-  }
-
-  const handlePrintQR = () => {
-    if (!qrCodeUrl) return
-
-    const printWindow = window.open('', '_blank')
-    if (printWindow) {
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>QRコード - ${selectedStaff?.full_name}</title>
-            <style>
-              body {
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                min-height: 100vh;
-                margin: 0;
-                font-family: sans-serif;
-              }
-              h2 { margin-bottom: 20px; }
-              img { border: 2px solid #ccc; padding: 20px; }
-              p { margin-top: 20px; color: #666; }
-            </style>
-          </head>
-          <body>
-            <h2>${selectedStaff?.full_name} さん専用ログインQRコード</h2>
-            <img src="${qrCodeUrl}" alt="QR Code" />
-            <p>スタッフコード: ${selectedStaff?.staff_code}</p>
-            <script>window.print();</script>
-          </body>
-        </html>
-      `)
-      printWindow.document.close()
-    }
-  }
-
-  if (staff.length === 0) {
-    return (
-      <div className="flex h-64 items-center justify-center rounded-lg border border-dashed">
-        <div className="text-center">
-          <p className="text-sm text-muted-foreground">スタッフがまだ登録されていません</p>
-          <p className="text-xs text-muted-foreground">右上の「スタッフ追加」ボタンから登録してください</p>
-        </div>
-      </div>
-    )
   }
 
   return (
     <>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>スタッフコード</TableHead>
-            <TableHead>名前</TableHead>
-            <TableHead>メール</TableHead>
-            <TableHead>電話番号</TableHead>
-            <TableHead>ステータス</TableHead>
-            <TableHead className="text-right">アクション</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {staff.map((staffMember) => (
-            <TableRow key={staffMember.id}>
-              <TableCell className="font-medium">{staffMember.staff_code}</TableCell>
-              <TableCell>{staffMember.full_name}</TableCell>
-              <TableCell>{staffMember.email || '-'}</TableCell>
-              <TableCell>{staffMember.phone || '-'}</TableCell>
-              <TableCell>
-                <span
-                  className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                    staffMember.is_active
-                      ? 'bg-green-50 text-green-700'
-                      : 'bg-gray-50 text-gray-700'
-                  }`}
-                >
-                  {staffMember.is_active ? '稼働中' : '休止中'}
-                </span>
-              </TableCell>
-              <TableCell className="text-right">
-                <div className="flex justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleShowQRCode(staffMember)}
-                  >
-                    <QrCode className="h-4 w-4" />
-                    <span className="ml-1">QR</span>
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleDelete(staffMember.id)}
-                    disabled={deleting === staffMember.id}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </TableCell>
+      <div className="rounded-lg border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>名前</TableHead>
+              <TableHead className="hidden md:table-cell">スタッフコード</TableHead>
+              <TableHead>ステータス</TableHead>
+              <TableHead className="hidden lg:table-cell">連絡先</TableHead>
+              <TableHead className="text-right">アクション</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-
-      <Dialog open={!!selectedStaff} onOpenChange={() => setSelectedStaff(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{selectedStaff?.full_name} さん専用QRコード</DialogTitle>
-            <DialogDescription>
-              スタッフにこのQRコードを読み取ってもらうことでログインできます
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col items-center gap-4">
-            {qrCodeUrl && (
-              <img src={qrCodeUrl} alt="QR Code" className="rounded-lg border" />
+          </TableHeader>
+          <TableBody>
+            {staff.length > 0 ? (
+              staff.map((s) => (
+                <TableRow key={s.id}>
+                  <TableCell className="font-medium">{s.full_name}</TableCell>
+                  <TableCell className="hidden md:table-cell">{s.staff_code}</TableCell>
+                  <TableCell>
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+                        s.is_active
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-gray-100 text-gray-800'
+                      }`}
+                    >
+                      {s.is_active ? '有効' : '無効'}
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell">
+                    <div>{s.email}</div>
+                    <div>{s.phone}</div>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" className="h-8 w-8 p-0">
+                          <span className="sr-only">メニューを開く</span>
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>アクション</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setSelectedStaff(s)
+                            setIsEditModalOpen(true)
+                          }}
+                        >
+                          <Edit className="mr-2 h-4 w-4" />
+                          <span>編集</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setSelectedStaff(s)
+                            setIsQrModalOpen(true)
+                          }}
+                        >
+                          <QrCode className="mr-2 h-4 w-4" />
+                          <span>QRコード表示</span>
+                        </DropdownMenuItem>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                              {s.is_active ? (
+                                <>
+                                  <Trash2 className="mr-2 h-4 w-4 text-destructive" />
+                                  <span className="text-destructive">無効化</span>
+                                </>
+                              ) : (
+                                <>
+                                  <UserPlus className="mr-2 h-4 w-4" />
+                                  <span>有効化</span>
+                                </>
+                              )}
+                            </DropdownMenuItem>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>{s.full_name} を{s.is_active ? '無効化' : '有効化'}しますか？</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                {s.is_active
+                                  ? 'スタッフを無効化すると、そのスタッフはログインできなくなります。過去のシフト記録は残ります。'
+                                  : 'スタッフを有効化すると、再度ログインしてシフト希望などを提出できるようになります。'}
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>キャンセル</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => handleToggleActive(s)}>
+                                続行
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={5} className="h-24 text-center">
+                  まだスタッフが登録されていません。
+                </TableCell>
+              </TableRow>
             )}
-            <div className="text-center">
-              <p className="text-sm text-muted-foreground">スタッフコード</p>
-              <p className="font-mono text-lg font-bold">{selectedStaff?.staff_code}</p>
-            </div>
-            <Button onClick={handlePrintQR} className="w-full">
-              印刷する
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+          </TableBody>
+        </Table>
+      </div>
+
+      <StaffEditModal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        staff={selectedStaff}
+        onUpdate={onUpdate}
+      />
+      <StaffQrCodeModal
+        isOpen={isQrModalOpen}
+        onClose={() => setIsQrModalOpen(false)}
+        staff={selectedStaff}
+      />
     </>
   )
 }
